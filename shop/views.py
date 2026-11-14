@@ -1,8 +1,14 @@
+import re
+from datetime import date, datetime, time, timedelta, timezone
+
+from django.db.models import Count, Q, Sum
+
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Item, OutboxMessage
+# from .models import Item, OutboxMessage
+from .models import HistoricalOrder, Item, OutboxMessage
 from .services import PurchaseError, record_purchase
 
 CONFLICT_CODES = {"sold_out", "duplicate_purchase"}
@@ -76,3 +82,121 @@ class OutboxView(APIView):
             }
             for m in messages
         ])
+
+
+PAGE_SIZE = 10
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+class BadParam(Exception):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def parse_day(value):
+   
+    if not DATE_RE.match(value):
+        raise BadParam("invalid_date")
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise BadParam("invalid_date")
+
+
+def utc_midnight(day):
+    return datetime.combine(day, time.min, tzinfo=timezone.utc)
+
+
+def apply_date_window(qs, params):
+    
+    start = params.get("from")
+    end = params.get("to")
+    try:
+        if start:
+            qs = qs.filter(created_at__gte=utc_midnight(parse_day(start)))
+        if end:
+            next_day = parse_day(end) + timedelta(days=1)
+            qs = qs.filter(created_at__lt=utc_midnight(next_day))
+    except OverflowError:
+        raise BadParam("invalid_date")
+    return qs
+
+
+def parse_page(value):
+    if value is None or value == "":
+        return 1
+    if not value.isdigit() or int(value) < 1:
+        raise BadParam("invalid_page")
+    return int(value)
+
+
+def history_to_dict(h):
+    return {
+        "orderId": h.order_id,
+        "email": h.email,
+        "sku": h.sku,
+        "extraCode": h.extra_code,
+        "channel": h.channel,
+        "createdAt": h.created_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "totalCents": h.total_cents,
+        "returned": h.returned,
+    }
+
+
+class HistoryListView(APIView):
+    def get(self, request):
+        params = request.query_params
+        try:
+            qs = apply_date_window(HistoricalOrder.objects.all(), params)
+            page = parse_page(params.get("page"))
+        except BadParam as exc:
+            return Response({"error": exc.code}, status=status.HTTP_400_BAD_REQUEST)
+
+        if params.get("sku"):
+            qs = qs.filter(sku=params["sku"])
+        if params.get("channel"):
+            qs = qs.filter(channel=params["channel"])
+
+        qs = qs.order_by("created_at", "order_id")
+        count = qs.count()
+        start = (page - 1) * PAGE_SIZE
+        rows = qs[start:start + PAGE_SIZE]
+
+        return Response({
+            "count": count,
+            "page": page,
+            "results": [history_to_dict(h) for h in rows],
+        })
+
+
+class HistoryStatsView(APIView):
+    def get(self, request):
+        try:
+            qs = apply_date_window(HistoricalOrder.objects.all(), request.query_params)
+        except BadParam as exc:
+            return Response({"error": exc.code}, status=status.HTTP_400_BAD_REQUEST)
+
+        grouped = (
+            qs.order_by()
+            .values("sku")
+            .annotate(
+                orders=Count("id"),
+                revenue=Sum("total_cents"),
+                returned_count=Count("id", filter=Q(returned=True)),
+            )
+        )
+        by_sku = {row["sku"]: row for row in grouped}
+
+        result = {}
+        for sku in ("lamp", "stool"):
+            row = by_sku.get(sku)
+            if row is None:
+                result[sku] = {"orders": 0, "revenueCents": 0, "returnRate": None}
+            else:
+                result[sku] = {
+                    "orders": row["orders"],
+                    "revenueCents": row["revenue"],
+                    "returnRate": round(row["returned_count"] / row["orders"], 2),
+                }
+        return Response(result)    
