@@ -60,3 +60,19 @@ class OutboxMessage(models.Model):
 
     class Meta:
         ordering = ["id"]
+
+class HistoricalOrder(models.Model):
+    order_id = models.CharField(max_length=50, unique=True)
+    email = models.CharField(max_length=254)
+    sku = models.CharField(max_length=50)
+    extra_code = models.CharField(max_length=50, null=True, blank=True)
+    channel = models.CharField(max_length=20)
+    created_at = models.DateTimeField()
+    total_cents = models.PositiveIntegerField()
+    returned = models.BooleanField()
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["created_at", "order_id"]),
+            models.Index(fields=["email", "created_at"]),
+        ]        
