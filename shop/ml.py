@@ -1,3 +1,8 @@
+import json
+from datetime import timezone
+
+import joblib
+from django.conf import settings
 from datetime import timezone
 
 FEATURES = [
@@ -21,3 +26,20 @@ def build_feature_row(sku, extra_code, channel, created_at, prior_orders):
         created_at.hour,
         prior_orders,
     ]
+
+_cache = {"model": None, "version": None, "mtime": None}
+
+
+def get_model():
+ 
+    path = settings.MODEL_DIR / "return_model.joblib"
+    meta = settings.MODEL_DIR / "metrics.json"
+    if not path.exists() or not meta.exists():
+        return None, None
+
+    mtime = (path.stat().st_mtime_ns, meta.stat().st_mtime_ns)
+    if _cache["model"] is None or _cache["mtime"] != mtime:
+        _cache["model"] = joblib.load(path)
+        _cache["version"] = json.loads(meta.read_text())["version"]
+        _cache["mtime"] = mtime
+    return _cache["model"], _cache["version"]

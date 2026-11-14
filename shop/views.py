@@ -1,3 +1,4 @@
+from . import ml
 import re
 from datetime import date, datetime, time, timedelta, timezone
 
@@ -200,3 +201,68 @@ class HistoryStatsView(APIView):
                     "returnRate": round(row["returned_count"] / row["orders"], 2),
                 }
         return Response(result)    
+
+
+VALID_CHANNELS = {"web", "app", "store"}
+
+
+def parse_aware_datetime(value):
+    """ISO datetime (timezone ke saath) ko aware datetime banao, warna None."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$", value):
+        return None
+    try:
+        return datetime.fromisoformat(value).astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
+class ReturnRiskView(APIView):
+    def post(self, request):
+        data = request.data
+        if not isinstance(data, dict):
+            return Response({"error": "missing_fields"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Model hai?
+        model, version = ml.get_model()
+        if model is None:
+            return Response({"error": "model_not_trained"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        email = data.get("email")
+        sku = data.get("sku")
+        channel = data.get("channel")
+        extra_code = data.get("extraCode")
+        created_at = parse_aware_datetime(data.get("createdAt"))
+
+        if not all(isinstance(v, str) and v.strip() for v in (email, sku, channel)):
+            return Response({"error": "missing_fields"}, status=status.HTTP_400_BAD_REQUEST)
+        if extra_code is not None and not isinstance(extra_code, str):
+            return Response({"error": "missing_fields"}, status=status.HTTP_400_BAD_REQUEST)
+        if created_at is None:
+            return Response({"error": "invalid_created_at"}, status=status.HTTP_400_BAD_REQUEST)
+
+        email = email.strip().lower()
+        sku = sku.strip().lower()
+        channel = channel.strip().lower()
+        extra_code = (extra_code or "").strip().lower() or None
+
+        if sku not in ("lamp", "stool"):
+            return Response({"error": "unknown_item"}, status=status.HTTP_400_BAD_REQUEST)
+        if channel not in VALID_CHANNELS:
+            return Response({"error": "invalid_channel"}, status=status.HTTP_400_BAD_REQUEST)
+        if extra_code is not None and not (extra_code == "cushion" and sku == "stool"):
+            return Response({"error": "extra_not_allowed"}, status=status.HTTP_400_BAD_REQUEST)
+
+        prior_orders = HistoricalOrder.objects.filter(
+            email=email, created_at__lt=created_at
+        ).count()
+
+        row = ml.build_feature_row(sku, extra_code, channel, created_at, prior_orders)
+        probability = float(model.predict_proba([row])[0][1])
+
+        return Response({
+            "probability": round(probability, 3),
+            "modelVersion": version,
+        })    

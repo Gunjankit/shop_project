@@ -2,6 +2,10 @@ from django.urls import path, re_path
 
 #from .views import CatalogView, OutboxView, PurchaseView
 from .views import CatalogView, HistoryListView, HistoryStatsView, OutboxView, PurchaseView
+from .views import (
+    CatalogView, HistoryListView, HistoryStatsView,
+    OutboxView, PurchaseView, ReturnRiskView,
+)
 
 urlpatterns = [
     path("purchases/", PurchaseView.as_view()),
@@ -9,4 +13,5 @@ urlpatterns = [
     re_path(r"^outbox/?$", OutboxView.as_view()),
     re_path(r"^history/?$", HistoryListView.as_view()),
     re_path(r"^history/stats/?$", HistoryStatsView.as_view()),
+    re_path(r"^predictions/return-risk/?$", ReturnRiskView.as_view()),
 ]
