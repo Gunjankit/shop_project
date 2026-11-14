@@ -127,3 +127,4 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+MODEL_DIR = BASE_DIR / "models"
